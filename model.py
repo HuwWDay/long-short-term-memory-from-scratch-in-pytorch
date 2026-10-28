@@ -64,3 +64,73 @@ def rnn_forward(X, p):
         
     return torch.stack(hidden_states, dim=1)
 
+# Step 2 - gradient_vs_lag
+import math
+import numpy as np
+import torch
+
+def gradient_vs_lag(forward, X, lags):
+    """
+    Computes L2 gradient norms of the input at time step T - 1 - lag with respect
+    to the sum of the last time step's hidden states.
+    
+    Args:
+        forward: Callable mapping X of shape (B, T, d) to states of shape (B, T, h).
+        X: Input tensor of shape (B, T, d).
+        lags: Iterable of non-negative integer lags.
+        
+    Returns:
+        List of float L2 norms of the gradient for each lag.
+    """
+    X_input = X.clone().detach().requires_grad_(True)
+    states = forward(X_input)  # Shape: (B, T, h)
+    
+    T = states.shape[1]
+    # Loss is the sum of the last step's states
+    loss = states[:, -1, :].sum()
+    loss.backward()
+    
+    # X_input.grad has shape (B, T, d)
+    grad = X_input.grad
+    norms = []
+    for lag in lags:
+        step_idx = T - 1 - lag
+        # Compute Frobenius / L2 norm over (B, d) at the target time step
+        step_norm = torch.linalg.norm(grad[:, step_idx, :]).item()
+        norms.append(float(step_norm))
+        
+    return norms
+
+def decay_rate(lags, norms):
+    """
+    Computes the least-squares slope of log(norms) against lags.
+    
+    Args:
+        lags: Array-like of integer lags.
+        norms: Array-like of gradient norms.
+        
+    Returns:
+        float: The slope of the least-squares fit line.
+    """
+    x = np.asarray(lags, dtype=np.float64)
+    y = np.log(np.asarray(norms, dtype=np.float64))
+    
+    # Fit degree 1 polynomial: y = slope * x + intercept
+    slope, _ = np.polyfit(x, y, deg=1)
+    return float(slope)
+
+def half_life(rate):
+    """
+    Computes the half-life from the decay rate: ln(0.5) / rate for rate < 0,
+    otherwise returns float('inf').
+    
+    Args:
+        rate: float decay rate (slope).
+        
+    Returns:
+        float: Half-life in time steps, or float('inf').
+    """
+    if rate < 0:
+        return math.log(0.5) / rate
+    return float('inf')
+
